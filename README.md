@@ -1,4 +1,5 @@
-# Zappy
+<img width="1226" height="638" alt="image" src="https://github.com/user-attachments/assets/cae50f18-bd27-4506-9199-f267e19120ae" />
+
 
 Jeu en réseau multi-joueurs développé dans le cadre du cursus Epitech.
 Des équipes d'IA s'affrontent sur un monde en tuiles pour collecter des
