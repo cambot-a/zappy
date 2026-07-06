@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+
+##
+## EPITECH PROJECT, 2026
+## local_zappy
+## File description:
+## Launch server and N AI clients with periodic level/inventory monitoring
+##
+
+import os
+import re
+import sys
+import time
+import subprocess
+
+WORKSPACE = os.path.dirname(os.path.abspath(__file__))
+IA_DIR = os.path.join(WORKSPACE, "src", "ia")
+LOG_DIR = "/tmp/zappy_launch"
+USAGE = (
+    "USAGE: ./launch_ai_and_serv -n count [-p port] [-x w] [-y h]"
+    " [-t team] [-c slots] [-f freq] [-i interval]"
+)
+DEFAULTS = {
+    "port": 4242, "width": 10, "height": 10,
+    "team": "TeamA", "slots": 20, "freq": 100, "interval": 10.0,
+}
+FLAG_MAP = {
+    "-n": ("count", int), "-p": ("port", int),
+    "-x": ("width", int), "-y": ("height", int),
+    "-t": ("team", str), "-c": ("slots", int),
+    "-f": ("freq", int), "-i": ("interval", float),
+}
+STONE_NAMES = ("linemate", "deraumere", "sibur", "mendiane", "phiras", "thystame")
+
+
+def stop_processes(procs: list[subprocess.Popen], timeout: float = 2.0) -> None:
+    for proc in procs:
+        if proc.poll() is None:
+            proc.terminate()
+    deadline = time.time() + timeout
+    for proc in procs:
+        if proc.poll() is not None:
+            continue
+        wait_left = max(0.0, deadline - time.time())
+        try:
+            proc.wait(timeout=wait_left)
+        except subprocess.TimeoutExpired:
+            pass
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+    for proc in procs:
+        if proc.poll() is None:
+            proc.wait(timeout=1.0)
+
+
+def parse_args(argv: list[str]) -> dict:
+    args = dict(DEFAULTS)
+    args["count"] = None
+    i = 0
+    while i < len(argv):
+        if argv[i] not in FLAG_MAP:
+            print(f"error: unknown flag '{argv[i]}'", file=sys.stderr)
+            print(USAGE, file=sys.stderr)
+            sys.exit(84)
+        key, cast = FLAG_MAP[argv[i]]
+        if i + 1 >= len(argv):
+            print(f"error: {argv[i]} requires a value", file=sys.stderr)
+            sys.exit(84)
+        try:
+            args[key] = cast(argv[i + 1])
+        except ValueError:
+            print(f"error: {argv[i]} expects a {'number' if cast != str else 'string'}", file=sys.stderr)
+            sys.exit(84)
+        i += 2
+    if args["count"] is None or args["count"] < 1:
+        print(USAGE, file=sys.stderr)
+        sys.exit(84)
+    return args
+
+
+def start_server(args: dict) -> subprocess.Popen:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log = open(os.path.join(LOG_DIR, "server.log"), "w")
+    return subprocess.Popen(
+        [
+            os.path.join(WORKSPACE, "zappy_server"),
+            "-p", str(args["port"]),
+            "-x", str(args["width"]),
+            "-y", str(args["height"]),
+            "-n", args["team"],
+            "-c", str(args["slots"]),
+            "-f", str(args["freq"]),
+        ],
+        stdout=log, stderr=log,
+    )
+
+
+def start_workers(count: int, args: dict) -> list[subprocess.Popen]:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    workers = []
+    script = os.path.abspath(__file__)
+    env = os.environ.copy()
+    existing_path = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = IA_DIR if not existing_path else f"{IA_DIR}:{existing_path}"
+    for i in range(1, count + 1):
+        log = open(os.path.join(LOG_DIR, f"ai_{i}.log"), "w")
+        proc = subprocess.Popen(
+            [sys.executable, script, "--worker", str(i),
+             str(args["port"]), args["team"]],
+            stdout=log, stderr=log, env=env,
+        )
+        workers.append(proc)
+    return workers
+
+
+def read_status(ai_id: int) -> dict:
+    path = os.path.join(LOG_DIR, f"ai_{ai_id}.log")
+    status = {"level": "-", "food": "-", "state": "-", "stones": ""}
+    level_re = re.compile(r"level=(\d+)")
+    food_re = re.compile(r"food=(\d+)")
+    state_re = re.compile(r"state=(\w+)")
+    stones_re = re.compile(r"needed=(\{[^}]*\})")
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+        for line in reversed(lines):
+            lm = level_re.search(line)
+            fm = food_re.search(line)
+            sm = state_re.search(line)
+            nm = stones_re.search(line)
+            if lm and not status["level"].isdigit():
+                status["level"] = lm.group(1)
+            if fm and status["food"] == "-":
+                status["food"] = fm.group(1)
+            if sm and status["state"] == "-":
+                status["state"] = sm.group(1)
+            if nm and not status["stones"]:
+                status["stones"] = nm.group(1)
+            if status["level"].isdigit() and status["food"] != "-":
+                break
+    except (OSError, IOError):
+        pass
+    return status
+
+
+def print_table(server: subprocess.Popen, workers: list[subprocess.Popen],
+                count: int, elapsed: float) -> bool:
+    srv_ok = server.poll() is None
+    alive = sum(1 for w in workers if w.poll() is None)
+    print(f"\n=== t={elapsed:.0f}s  server={'alive' if srv_ok else 'DEAD'}"
+          f"  AIs={alive}/{count} ===")
+    print(f"{'#':>3}  {'lvl':>3}  {'food':>4}  {'state':<20}  needed")
+    done_count = 0
+    for i, worker in enumerate(workers, start=1):
+        s = read_status(i)
+        alive_mark = " " if worker.poll() is None else "x"
+        if alive_mark == "x":
+            continue
+        print(f"{alive_mark}{i:>2}  {s['level']:>3}  {s['food']:>4}"
+              f"  {s['state']:<20}  {s['stones']}")
+        if s["level"] == "8":
+            done_count += 1
+    return done_count > 0 or not srv_ok or alive == 0
+
+
+def run_launcher(argv: list[str]) -> None:
+    args = parse_args(argv)
+    server = start_server(args)
+    workers: list[subprocess.Popen] = []
+    time.sleep(0.5)
+    if server.poll() is not None:
+        print("error: server failed to start", file=sys.stderr)
+        sys.exit(84)
+    workers = start_workers(args["count"], args)
+    t0 = time.time()
+    print(f"server PID={server.pid}  {args['count']} AIs started")
+    print(f"logs: {LOG_DIR}/")
+    try:
+        while True:
+            time.sleep(args["interval"])
+            if print_table(server, workers, args["count"], time.time() - t0):
+                break
+    except KeyboardInterrupt:
+        print("\ninterrupted")
+    finally:
+        stop_processes(workers)
+        stop_processes([server])
+    print("done.")
+
+
+def run_worker(argv: list[str]) -> None:
+    if len(argv) < 3:
+        sys.exit(84)
+    ai_id, port, team = argv[0], int(argv[1]), argv[2]
+    if IA_DIR not in sys.path:
+        sys.path.insert(0, IA_DIR)
+    from connection import open_connection
+    from handshake import perform_handshake
+    from line_buffer import LineBuffer
+    from sender import CommandSender
+    from player_state import make_player_state
+    from fsm import Fsm
+    from elevation import (ElevationState, make_current_level_handler,
+                           make_elevation_underway_handler, make_ko_elevation_handler)
+    from dispatcher import Dispatcher
+    from broadcast import parse_broadcast
+    from event_loop import _handle_dead
+    from stones import needed_stones
+    sock = open_connection("127.0.0.1", port)
+    info = perform_handshake(sock, team)
+    state = make_player_state(team, info.slots, info.width, info.height)
+    fsm = Fsm(state)
+    buf = LineBuffer(sock)
+    sender = CommandSender(sock)
+    elev = ElevationState()
+    d = Dispatcher(fallback=sender.on_response)
+    d.register("dead", _handle_dead)
+    d.register("Elevation underway", make_elevation_underway_handler(elev, sender))
+    d.register("Current level: ", make_current_level_handler(elev))
+    d.register("ko", make_ko_elevation_handler(elev, sender))
+    d.register("message ", lambda l: (lambda m: fsm.on_broadcast(sender, m.direction, m.text, elev) if m else None)(parse_broadcast(l)))
+    fsm.tick(sender, elev)
+    t0 = time.time()
+    last_log = 0.0
+    while True:
+        line = buf.readline()
+        if line is None:
+            break
+        elapsed = time.time() - t0
+        d.dispatch(line)
+        if state.level >= 8:
+            print(f"[{elapsed:.1f}s] level=8 food={state.inventory.get('food', 0)} state=DONE", flush=True)
+            break
+        if elapsed - last_log >= 5.0:
+            ns = needed_stones(state.level, state.inventory)
+            print(
+                f"[{elapsed:.0f}s] level={state.level}"
+                f" food={state.inventory.get('food', 0)}"
+                f" needed={ns} state={state.fsm_state.name}",
+                flush=True,
+            )
+            last_log = elapsed
+        fsm.tick(sender, elev)
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--worker":
+        run_worker(argv[1:])
+    else:
+        run_launcher(argv)
+
+
+main()
