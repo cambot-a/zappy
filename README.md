@@ -6,6 +6,12 @@ Des équipes d'IA s'affrontent sur un monde en tuiles pour collecter des
 ressources et faire évoluer leurs joueurs, le tout orchestré par un serveur
 central et observable via une interface graphique.
 
+___
+
+<img width="253" height="209" alt="image" src="https://github.com/user-attachments/assets/97f55318-7e0c-4a93-a58b-b2b96c50e089" />
+
+___
+
 ## Composants
 
 | Binaire        | Langage | Rôle                                    |
